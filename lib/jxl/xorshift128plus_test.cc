@@ -4,7 +4,6 @@
 // license that can be found in the LICENSE file.
 
 #include <stdint.h>
-#include <stdio.h>
 
 #include <algorithm>
 #include <vector>
@@ -13,10 +12,11 @@
 #define HWY_TARGET_INCLUDE "lib/jxl/xorshift128plus_test.cc"
 #include <hwy/foreach_target.h>
 #include <hwy/highway.h>
-#include <hwy/tests/test_util-inl.h>
+#include <hwy/tests/hwy_gtest.h>
 
 #include "lib/jxl/base/data_parallel.h"
-#include "lib/jxl/base/thread_pool_internal.h"
+#include "lib/jxl/test_utils.h"
+#include "lib/jxl/testing.h"
 #include "lib/jxl/xorshift128plus-inl.h"
 
 HWY_BEFORE_NAMESPACE();
@@ -286,7 +286,7 @@ void TestSeedChanges() {
 }
 
 void TestFloat() {
-  ThreadPoolInternal pool(8);
+  test::ThreadPoolForTests pool(8);
 
 #ifdef JXL_DISABLE_SLOW_TESTS
   const uint32_t kMaxSeed = 256;
@@ -294,7 +294,7 @@ void TestFloat() {
   const uint32_t kMaxSeed = 4096;
 #endif  // JXL_DISABLE_SLOW_TESTS
   EXPECT_TRUE(RunOnPool(
-      &pool, 0, kMaxSeed, ThreadPool::NoInit,
+      pool.get(), 0, kMaxSeed, ThreadPool::NoInit,
       [](const uint32_t seed, size_t /*thread*/) {
         HWY_ALIGN Xorshift128Plus rng(seed);
 
@@ -332,7 +332,7 @@ void TestFloat() {
 
 // Not more than one 64-bit zero
 void TestNotZero() {
-  ThreadPoolInternal pool(8);
+  test::ThreadPoolForTests pool(8);
 
 #ifdef JXL_DISABLE_SLOW_TESTS
   const uint32_t kMaxSeed = 500;
@@ -340,7 +340,7 @@ void TestNotZero() {
   const uint32_t kMaxSeed = 2000;
 #endif  // JXL_DISABLE_SLOW_TESTS
   EXPECT_TRUE(RunOnPool(
-      &pool, 0, kMaxSeed, ThreadPool::NoInit,
+      pool.get(), 0, kMaxSeed, ThreadPool::NoInit,
       [](const uint32_t task, size_t /*thread*/) {
         HWY_ALIGN uint64_t lanes[Xorshift128Plus::N];
 

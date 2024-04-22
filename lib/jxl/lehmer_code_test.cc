@@ -5,18 +5,17 @@
 
 #include "lib/jxl/lehmer_code.h"
 
-#include <stdint.h>
-#include <string.h>
-
-#include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <numeric>
 #include <vector>
 
-#include "gtest/gtest.h"
 #include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/data_parallel.h"
 #include "lib/jxl/base/random.h"
-#include "lib/jxl/base/thread_pool_internal.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/test_utils.h"
+#include "lib/jxl/testing.h"
 
 namespace jxl {
 namespace {
@@ -86,12 +85,12 @@ void RoundtripSizeRange(ThreadPool* pool, uint32_t begin, uint32_t end) {
 }
 
 TEST(LehmerCodeTest, TestRoundtrips) {
-  ThreadPoolInternal pool(8);
+  test::ThreadPoolForTests pool(8);
 
-  RoundtripSizeRange<uint16_t>(&pool, 1, 1026);
+  RoundtripSizeRange<uint16_t>(pool.get(), 1, 1026);
 
   // Ensures PermutationT can fit > 16 bit values.
-  RoundtripSizeRange<uint32_t>(&pool, 65536, 65540);
+  RoundtripSizeRange<uint32_t>(pool.get(), 65536, 65540);
 }
 
 }  // namespace

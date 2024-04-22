@@ -8,7 +8,7 @@
 
 // Macros for compiler version + nonstandard keywords, e.g. __builtin_expect.
 
-#include <stdint.h>
+#include <sys/types.h>
 
 #include "lib/jxl/base/sanitizer_definitions.h"
 
@@ -62,11 +62,11 @@
 #endif
 
 #if JXL_COMPILER_MSVC
-#define JXL_UNREACHABLE __assume(false)
+#define JXL_UNREACHABLE_BUILTIN __assume(false)
 #elif JXL_COMPILER_CLANG || JXL_COMPILER_GCC >= 405
-#define JXL_UNREACHABLE __builtin_unreachable()
+#define JXL_UNREACHABLE_BUILTIN __builtin_unreachable()
 #else
-#define JXL_UNREACHABLE
+#define JXL_UNREACHABLE_BUILTIN
 #endif
 
 #if JXL_COMPILER_MSVC
@@ -94,6 +94,11 @@
 #else
 #define JXL_LIKELY(expr) __builtin_expect(!!(expr), 1)
 #define JXL_UNLIKELY(expr) __builtin_expect(!!(expr), 0)
+#endif
+
+#if JXL_COMPILER_MSVC
+#include <stdint.h>
+using ssize_t = intptr_t;
 #endif
 
 // Returns a void* pointer which the compiler then assumes is N-byte aligned.
@@ -147,10 +152,6 @@
   __attribute__((__format__(__printf__, idx_fmt, idx_arg)))
 #else
 #define JXL_FORMAT(idx_fmt, idx_arg)
-#endif
-
-#if JXL_COMPILER_MSVC
-using ssize_t = intptr_t;
 #endif
 
 #endif  // LIB_JXL_BASE_COMPILER_SPECIFIC_H_

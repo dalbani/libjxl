@@ -5,16 +5,18 @@
 
 #include "lib/jxl/enc_optimize.h"
 
-#include <stdio.h>
+#include <cmath>
+#include <cstddef>
+#include <vector>
 
-#include "gtest/gtest.h"
+#include "lib/jxl/testing.h"
 
 namespace jxl {
 namespace optimize {
 namespace {
 
 // The maximum number of iterations for the test.
-static const size_t kMaxTestIter = 100000;
+const size_t kMaxTestIter = 100000;
 
 // F(w) = (w - w_min)^2.
 struct SimpleQuadraticFunction {

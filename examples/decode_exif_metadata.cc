@@ -7,15 +7,14 @@
 // available at once). The example outputs the pixels and color information to a
 // floating point image and an ICC profile on disk.
 
+#include <jxl/decode.h>
+#include <jxl/decode_cxx.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <vector>
-
-#include "jxl/decode.h"
-#include "jxl/decode_cxx.h"
 
 bool DecodeJpegXlExif(const uint8_t* jxl, size_t size,
                       std::vector<uint8_t>* exif) {
@@ -57,8 +56,9 @@ bool DecodeJpegXlExif(const uint8_t* jxl, size_t size,
         return true;
       }
       JxlBoxType type;
-      if (JXL_DEC_SUCCESS !=
-          JxlDecoderGetBoxType(dec.get(), type, support_decompression)) {
+      status = JxlDecoderGetBoxType(dec.get(), type,
+                                    TO_JXL_BOOL(support_decompression));
+      if (JXL_DEC_SUCCESS != status) {
         fprintf(stderr, "Error, failed to get box type\n");
         return false;
       }
@@ -97,7 +97,7 @@ bool LoadFile(const char* filename, std::vector<uint8_t>* out) {
     return false;
   }
 
-  long size = ftell(file);
+  long size = ftell(file);  // NOLINT
   // Avoid invalid file or directory.
   if (size >= LONG_MAX || size < 0) {
     fclose(file);

@@ -7,16 +7,18 @@
 
 #include <stdint.h>
 
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
 
 #include "lib/jxl/base/byte_order.h"
-#include "lib/jxl/common.h"
+#include "lib/jxl/color_encoding_internal.h"
 #include "lib/jxl/enc_ans.h"
 #include "lib/jxl/enc_aux_out.h"
 #include "lib/jxl/fields.h"
 #include "lib/jxl/icc_codec_common.h"
+#include "lib/jxl/padded_bytes.h"
 
 namespace jxl {
 namespace {
@@ -35,7 +37,8 @@ void Unshuffle(uint8_t* data, size_t size, size_t width) {
   size_t height = (size + width - 1) / width;  // amount of rows of input
   PaddedBytes result(size);
   // i = input index, j output index
-  size_t s = 0, j = 0;
+  size_t s = 0;
+  size_t j = 0;
   for (size_t i = 0; i < size; i++) {
     result[j] = data[i];
     j += height;
@@ -69,6 +72,32 @@ Status PredictAndShuffle(size_t stride, size_t width, int order, size_t num,
   if (width > 1) Unshuffle(result->data() + start, num, width);
   return true;
 }
+
+inline void EncodeVarInt(uint64_t value, PaddedBytes* data) {
+  size_t pos = data->size();
+  data->resize(data->size() + 9);
+  size_t output_size = data->size();
+  uint8_t* output = data->data();
+
+  // While more than 7 bits of data are left,
+  // store 7 bits and set the next byte flag
+  while (value > 127) {
+    // TODO(eustas): should it be `<` ?
+    JXL_CHECK(pos <= output_size);
+    // |128: Set the next byte flag
+    output[pos++] = (static_cast<uint8_t>(value & 127)) | 128;
+    // Remove the seven bits we just wrote
+    value >>= 7;
+  }
+  // TODO(eustas): should it be `<` ?
+  JXL_CHECK(pos <= output_size);
+  output[pos++] = static_cast<uint8_t>(value & 127);
+
+  data->resize(pos);
+}
+
+constexpr size_t kSizeLimit = std::numeric_limits<uint32_t>::max() >> 2;
+
 }  // namespace
 
 // Outputs a transformed form of the given icc profile. The result itself is
@@ -79,10 +108,18 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
   PaddedBytes commands;
   PaddedBytes data;
 
+  static_assert(sizeof(size_t) >= 4, "size_t is too short");
+  // Fuzzer expects that PredictICC can accept any input,
+  // but 1GB should be enough for any purpose.
+  if (size > kSizeLimit) {
+    return JXL_FAILURE("ICC profile is too large");
+  }
+
   EncodeVarInt(size, result);
 
   // Header
-  PaddedBytes header = ICCInitialHeaderPrediction();
+  PaddedBytes header;
+  header.append(ICCInitialHeaderPrediction());
   EncodeUint32(0, size, &header);
   for (size_t i = 0; i < kICCHeaderSize && i < size; i++) {
     ICCPredictHeader(icc, size, header.data(), i);
@@ -90,8 +127,8 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
   }
   if (size <= kICCHeaderSize) {
     EncodeVarInt(0, result);  // 0 commands
-    for (size_t i = 0; i < data.size(); i++) {
-      result->push_back(data[i]);
+    for (uint8_t b : data) {
+      result->push_back(b);
     }
     return true;
   }
@@ -200,7 +237,14 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
   // allowed for tagged elements to overlap, e.g. the curve for R, G and B could
   // all point to the same one.
   Tag tag;
-  size_t tagstart = 0, tagsize = 0, clutstart = 0;
+  size_t tagstart = 0;
+  size_t tagsize = 0;
+  size_t clutstart = 0;
+
+  // Should always check tag_sane before doing math with tagsize.
+  const auto tag_sane = [&tagsize]() {
+    return (tagsize > 8) && (tagsize < kSizeLimit);
+  };
 
   size_t last0 = pos;
   // This loop appends commands to the output, processing some sub-section of a
@@ -216,7 +260,8 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
     PaddedBytes data_add;
 
     // This means the loop brought the position beyond the tag end.
-    if (pos > tagstart + tagsize) {
+    // If tagsize is nonsensical, any pos looks "ok-ish".
+    if ((pos > tagstart + tagsize) && (tagsize < kSizeLimit)) {
       tag = {{0, 0, 0, 0}};  // nonsensical value
     }
 
@@ -227,7 +272,7 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
       tagstart = tagstarts[index];
       tagsize = tagsizes[index];
 
-      if (tag == kMlucTag && pos + tagsize <= size && tagsize > 8 &&
+      if (tag == kMlucTag && tag_sane() && pos + tagsize <= size &&
           icc[pos + 4] == 0 && icc[pos + 5] == 0 && icc[pos + 6] == 0 &&
           icc[pos + 7] == 0) {
         size_t num = tagsize - 8;
@@ -243,7 +288,7 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
         Unshuffle(data_add.data() + start, num, 2);
       }
 
-      if (tag == kCurvTag && pos + tagsize <= size && tagsize > 8 &&
+      if (tag == kCurvTag && tag_sane() && pos + tagsize <= size &&
           icc[pos + 4] == 0 && icc[pos + 5] == 0 && icc[pos + 6] == 0 &&
           icc[pos + 7] == 0) {
         size_t num = tagsize - 8;
@@ -251,7 +296,9 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
           commands_add.push_back(kCommandTypeStartFirst + 5);
           pos += 8;
           commands_add.push_back(kCommandPredict);
-          int order = 1, width = 2, stride = width;
+          int order = 1;
+          int width = 2;
+          int stride = width;
           commands_add.push_back((order << 2) | (width - 1));
           EncodeVarInt(num, &commands_add);
           JXL_RETURN_IF_ERROR(PredictAndShuffle(stride, width, order, num, icc,
@@ -269,7 +316,9 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
           pos += 12;
           last1 = pos;
           commands_add.push_back(kCommandPredict);
-          int order = 1, width = 2, stride = width;
+          int order = 1;
+          int width = 2;
+          int stride = width;
           commands_add.push_back((order << 2) | (width - 1));
           EncodeVarInt(num, &commands_add);
           JXL_RETURN_IF_ERROR(PredictAndShuffle(stride, width, order, num, icc,
@@ -309,9 +358,11 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
     }
 
     if (commands_add.empty() && data_add.empty() && tag == kGbd_Tag &&
-        pos == tagstart + 8 && pos + tagsize - 8 <= size && pos > 16 &&
-        tagsize > 8) {
-      size_t width = 4, order = 0, stride = width;
+        tag_sane() && pos == tagstart + 8 && pos + tagsize - 8 <= size &&
+        pos > 16) {
+      size_t width = 4;
+      size_t order = 0;
+      size_t stride = width;
       size_t num = tagsize - 8;
       uint8_t flags = (order << 2) | (width - 1) | (stride == width ? 0 : 16);
       commands_add.push_back(kCommandPredict);
@@ -352,11 +403,11 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
           data.push_back(icc[last0++]);
         }
       }
-      for (size_t i = 0; i < commands_add.size(); i++) {
-        commands.push_back(commands_add[i]);
+      for (uint8_t b : commands_add) {
+        commands.push_back(b);
       }
-      for (size_t i = 0; i < data_add.size(); i++) {
-        data.push_back(data_add[i]);
+      for (uint8_t b : data_add) {
+        data.push_back(b);
       }
       last0 = pos;
     }
@@ -366,17 +417,17 @@ Status PredictICC(const uint8_t* icc, size_t size, PaddedBytes* result) {
   }
 
   EncodeVarInt(commands.size(), result);
-  for (size_t i = 0; i < commands.size(); i++) {
-    result->push_back(commands[i]);
+  for (uint8_t b : commands) {
+    result->push_back(b);
   }
-  for (size_t i = 0; i < data.size(); i++) {
-    result->push_back(data[i]);
+  for (uint8_t b : data) {
+    result->push_back(b);
   }
 
   return true;
 }
 
-Status WriteICC(const PaddedBytes& icc, BitWriter* JXL_RESTRICT writer,
+Status WriteICC(const IccBytes& icc, BitWriter* JXL_RESTRICT writer,
                 size_t layer, AuxOut* JXL_RESTRICT aux_out) {
   if (icc.empty()) return JXL_FAILURE("ICC must be non-empty");
   PaddedBytes enc;
@@ -399,7 +450,7 @@ Status WriteICC(const PaddedBytes& icc, BitWriter* JXL_RESTRICT writer,
   params.force_huffman = true;
   BuildAndEncodeHistograms(params, kNumICCContexts, tokens, &code, &context_map,
                            writer, layer, aux_out);
-  WriteTokens(tokens[0], code, context_map, writer, layer, aux_out);
+  WriteTokens(tokens[0], code, context_map, 0, writer, layer, aux_out);
   return true;
 }
 

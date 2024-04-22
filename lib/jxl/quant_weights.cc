@@ -14,7 +14,6 @@
 
 #include "lib/jxl/base/bits.h"
 #include "lib/jxl/base/status.h"
-#include "lib/jxl/common.h"
 #include "lib/jxl/dct_scales.h"
 #include "lib/jxl/dec_modular.h"
 #include "lib/jxl/fields.h"
@@ -25,7 +24,7 @@
 #include <hwy/foreach_target.h>
 #include <hwy/highway.h>
 
-#include "lib/jxl/fast_math-inl.h"
+#include "lib/jxl/base/fast_math-inl.h"
 
 HWY_BEFORE_NAMESPACE();
 namespace jxl {
@@ -161,8 +160,8 @@ Status ComputeQuantTable(const QuantEncoding& encoding,
                          float* JXL_RESTRICT inv_table, size_t table_num,
                          DequantMatrices::QuantTable kind, size_t* pos) {
   constexpr size_t N = kBlockDim;
-  size_t wrows = 8 * DequantMatrices::required_size_x[kind],
-         wcols = 8 * DequantMatrices::required_size_y[kind];
+  size_t wrows = 8 * DequantMatrices::required_size_x[kind];
+  size_t wcols = 8 * DequantMatrices::required_size_y[kind];
   size_t num = wrows * wcols;
 
   std::vector<float> weights(3 * num);
@@ -362,7 +361,7 @@ namespace {
 
 HWY_EXPORT(ComputeQuantTable);
 
-static constexpr const float kAlmostZero = 1e-8f;
+constexpr const float kAlmostZero = 1e-8f;
 
 Status DecodeDctParams(BitReader* br, DctQuantWeightParams* params) {
   params->num_distance_bands =
@@ -475,16 +474,16 @@ Status Decode(BitReader* br, QuantEncoding* encoding, size_t required_size_x,
     default:
       return JXL_FAILURE("Invalid quantization table encoding");
   }
-  encoding->mode = QuantEncoding::Mode(mode);
+  encoding->mode = static_cast<QuantEncoding::Mode>(mode);
   return true;
 }
 
 }  // namespace
 
 // These definitions are needed before C++17.
-constexpr size_t DequantMatrices::required_size_[];
-constexpr size_t DequantMatrices::required_size_x[];
-constexpr size_t DequantMatrices::required_size_y[];
+constexpr const std::array<int, 17> DequantMatrices::required_size_x;
+constexpr const std::array<int, 17> DequantMatrices::required_size_y;
+constexpr const size_t DequantMatrices::kSumRequiredXy;
 constexpr DequantMatrices::QuantTable DequantMatrices::kQuantTable[];
 
 Status DequantMatrices::Decode(BitReader* br,
@@ -503,7 +502,7 @@ Status DequantMatrices::Decode(BitReader* br,
 }
 
 Status DequantMatrices::DecodeDC(BitReader* br) {
-  bool all_default = br->ReadBits(1);
+  bool all_default = static_cast<bool>(br->ReadBits(1));
   if (!br->AllReadsWithinBounds()) return JXL_FAILURE("EOS during DecodeDC");
   if (!all_default) {
     for (size_t c = 0; c < 3; c++) {
@@ -524,7 +523,7 @@ constexpr float V(float v) { return static_cast<float>(v); }
 namespace {
 struct DequantMatricesLibraryDef {
   // DCT8
-  static constexpr const QuantEncodingInternal DCT() {
+  static constexpr QuantEncodingInternal DCT() {
     return QuantEncodingInternal::DCT(DctQuantWeightParams({{{{
                                                                  V(3150.0),
                                                                  V(0.0),
@@ -553,7 +552,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // Identity
-  static constexpr const QuantEncodingInternal IDENTITY() {
+  static constexpr QuantEncodingInternal IDENTITY() {
     return QuantEncodingInternal::Identity({{{{
                                                  V(280.0),
                                                  V(3160.0),
@@ -572,7 +571,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT2
-  static constexpr const QuantEncodingInternal DCT2X2() {
+  static constexpr QuantEncodingInternal DCT2X2() {
     return QuantEncodingInternal::DCT2({{{{
                                              V(3840.0),
                                              V(2560.0),
@@ -600,7 +599,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT4 (quant_kind 3)
-  static constexpr const QuantEncodingInternal DCT4X4() {
+  static constexpr QuantEncodingInternal DCT4X4() {
     return QuantEncodingInternal::DCT4(DctQuantWeightParams({{{{
                                                                   V(2200.0),
                                                                   V(0.0),
@@ -636,7 +635,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT16
-  static constexpr const QuantEncodingInternal DCT16X16() {
+  static constexpr QuantEncodingInternal DCT16X16() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(8996.8725711814115328),
@@ -669,7 +668,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT32
-  static constexpr const QuantEncodingInternal DCT32X32() {
+  static constexpr QuantEncodingInternal DCT32X32() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(15718.40830982518931456),
@@ -705,7 +704,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT16X8
-  static constexpr const QuantEncodingInternal DCT8X16() {
+  static constexpr QuantEncodingInternal DCT8X16() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(7240.7734393502),
@@ -738,7 +737,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT32X8
-  static constexpr const QuantEncodingInternal DCT8X32() {
+  static constexpr QuantEncodingInternal DCT8X32() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(16283.2494710648897),
@@ -774,7 +773,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT32X16
-  static constexpr const QuantEncodingInternal DCT16X32() {
+  static constexpr QuantEncodingInternal DCT16X32() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(13844.97076442300573),
@@ -810,7 +809,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT4X8 and 8x4
-  static constexpr const QuantEncodingInternal DCT4X8() {
+  static constexpr QuantEncodingInternal DCT4X8() {
     return QuantEncodingInternal::DCT4X8(
         DctQuantWeightParams({{
                                  {{
@@ -841,7 +840,7 @@ struct DequantMatricesLibraryDef {
         }});
   }
   // AFV
-  static const QuantEncodingInternal AFV0() {
+  static QuantEncodingInternal AFV0() {
     return QuantEncodingInternal::AFV(DCT4X8().dct_params, DCT4X4().dct_params,
                                       {{{{
                                             // 4x4/4x8 DC tendency.
@@ -888,7 +887,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT64
-  static const QuantEncodingInternal DCT64X64() {
+  static QuantEncodingInternal DCT64X64() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(0.9 * 26629.073922049845),
@@ -924,7 +923,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT64X32
-  static const QuantEncodingInternal DCT32X64() {
+  static QuantEncodingInternal DCT32X64() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(0.65 * 23629.073922049845),
@@ -959,7 +958,7 @@ struct DequantMatricesLibraryDef {
                              8));
   }
   // DCT128X128
-  static const QuantEncodingInternal DCT128X128() {
+  static QuantEncodingInternal DCT128X128() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(1.8 * 26629.073922049845),
@@ -995,7 +994,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT128X64
-  static const QuantEncodingInternal DCT64X128() {
+  static QuantEncodingInternal DCT64X128() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(1.3 * 23629.073922049845),
@@ -1030,7 +1029,7 @@ struct DequantMatricesLibraryDef {
                              8));
   }
   // DCT256X256
-  static const QuantEncodingInternal DCT256X256() {
+  static QuantEncodingInternal DCT256X256() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(3.6 * 26629.073922049845),
@@ -1066,7 +1065,7 @@ struct DequantMatricesLibraryDef {
   }
 
   // DCT256X128
-  static const QuantEncodingInternal DCT128X256() {
+  static QuantEncodingInternal DCT128X256() {
     return QuantEncodingInternal::DCT(
         DctQuantWeightParams({{{{
                                    V(2.6 * 23629.073922049845),
@@ -1103,7 +1102,7 @@ struct DequantMatricesLibraryDef {
 };
 }  // namespace
 
-const DequantMatrices::DequantLibraryInternal DequantMatrices::LibraryInit() {
+DequantMatrices::DequantLibraryInternal DequantMatrices::LibraryInit() {
   static_assert(kNum == 17,
                 "Update this function when adding new quantization kinds.");
   static_assert(kNumPredefinedTables == 1,
@@ -1163,11 +1162,12 @@ const QuantEncoding* DequantMatrices::Library() {
 }
 
 DequantMatrices::DequantMatrices() {
-  encodings_.resize(size_t(QuantTable::kNum), QuantEncoding::Library(0));
+  encodings_.resize(static_cast<size_t>(QuantTable::kNum),
+                    QuantEncoding::Library(0));
   size_t pos = 0;
   size_t offsets[kNum * 3];
-  for (size_t i = 0; i < size_t(QuantTable::kNum); i++) {
-    size_t num = required_size_[i] * kDCTBlockSize;
+  for (size_t i = 0; i < static_cast<size_t>(QuantTable::kNum); i++) {
+    size_t num = required_size_x[i] * required_size_y[i] * kDCTBlockSize;
     for (size_t c = 0; c < 3; c++) {
       offsets[3 * i + c] = pos + c * num;
     }
@@ -1192,7 +1192,7 @@ Status DequantMatrices::EnsureComputed(uint32_t acs_mask) {
   size_t offsets[kNum * 3 + 1];
   size_t pos = 0;
   for (size_t i = 0; i < kNum; i++) {
-    size_t num = required_size_[i] * kDCTBlockSize;
+    size_t num = required_size_x[i] * required_size_y[i] * kDCTBlockSize;
     for (size_t c = 0; c < 3; c++) {
       offsets[3 * i + c] = pos + c * num;
     }

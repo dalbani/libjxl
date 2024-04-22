@@ -9,18 +9,20 @@
 // Library to decode the ANS population counts from the bit-stream and build a
 // decoding table from them.
 
-#include <stddef.h>
-#include <stdint.h>
+#include <jxl/types.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
 #include "lib/jxl/ans_common.h"
 #include "lib/jxl/ans_params.h"
 #include "lib/jxl/base/bits.h"
-#include "lib/jxl/base/byte_order.h"
-#include "lib/jxl/base/cache_aligned.h"
 #include "lib/jxl/base/compiler_specific.h"
+#include "lib/jxl/base/status.h"
+#include "lib/jxl/cache_aligned.h"
 #include "lib/jxl/dec_bit_reader.h"
 #include "lib/jxl/dec_huffman.h"
 #include "lib/jxl/field_encodings.h"
@@ -133,6 +135,11 @@ static constexpr int8_t kSpecialDistances[kNumSpecialDistances][2] = {
     {8, 0},  {4, 7},  {-4, 7}, {7, 4},  {-7, 4}, {8, 1},  {8, 2},  {6, 6},
     {-6, 6}, {8, 3},  {5, 7},  {-5, 7}, {7, 5},  {-7, 5}, {8, 4},  {6, 7},
     {-6, 7}, {7, 6},  {-7, 6}, {8, 5},  {7, 7},  {-7, 7}, {8, 6},  {8, 7}};
+static JXL_INLINE int SpecialDistance(size_t index, int multiplier) {
+  int dist = kSpecialDistances[index][0] +
+             static_cast<int>(multiplier) * kSpecialDistances[index][1];
+  return (dist > 1) ? dist : 1;
+}
 
 struct ANSCode {
   CacheAlignedUniquePtr alias_tables;
@@ -179,10 +186,7 @@ class ANSSymbolReader {
     num_special_distances_ =
         distance_multiplier == 0 ? 0 : kNumSpecialDistances;
     for (size_t i = 0; i < num_special_distances_; i++) {
-      int dist = kSpecialDistances[i][0];
-      dist += static_cast<int>(distance_multiplier) * kSpecialDistances[i][1];
-      if (dist < 1) dist = 1;
-      special_distances_[i] = dist;
+      special_distances_[i] = SpecialDistance(i, distance_multiplier);
     }
   }
 
@@ -196,7 +200,7 @@ class ANSSymbolReader {
         AliasTable::Lookup(table, res, log_entry_size_, entry_size_minus_1_);
     state_ = symbol.freq * (state_ >> ANS_LOG_TAB_SIZE) + symbol.offset;
 
-#if 1
+#if JXL_TRUE
     // Branchless version is about equally fast on SKX.
     const uint32_t new_state =
         (state_ << 16u) | static_cast<uint32_t>(br->PeekFixedBits<16>());
@@ -276,9 +280,10 @@ class ANSSymbolReader {
   }
 
   // Takes a *clustered* idx. Can only use if HuffRleOnly() is true.
-  void ReadHybridUintClusteredHuffRleOnly(size_t ctx,
-                                          BitReader* JXL_RESTRICT br,
-                                          uint32_t* value, uint32_t* run) {
+  JXL_INLINE void ReadHybridUintClusteredHuffRleOnly(size_t ctx,
+                                                     BitReader* JXL_RESTRICT br,
+                                                     uint32_t* value,
+                                                     uint32_t* run) {
     JXL_DASSERT(HuffRleOnly());
     br->Refill();  // covers ReadSymbolWithoutRefill + PeekBits
     size_t token = ReadSymbolHuffWithoutRefill(ctx, br);
@@ -300,55 +305,97 @@ class ANSSymbolReader {
     if (configs[lz77_ctx_].split_token > 1) return false;
     return true;
   }
+  bool UsesLZ77() { return lz77_window_ != nullptr; }
 
-  // Takes a *clustered* idx.
-  size_t ReadHybridUintClustered(size_t ctx, BitReader* JXL_RESTRICT br) {
-    if (JXL_UNLIKELY(num_to_copy_ > 0)) {
-      size_t ret = lz77_window_[(copy_pos_++) & kWindowMask];
-      num_to_copy_--;
-      lz77_window_[(num_decoded_++) & kWindowMask] = ret;
-      return ret;
+  // Takes a *clustered* idx. Inlined, for use in hot paths.
+  template <bool uses_lz77>
+  JXL_INLINE size_t ReadHybridUintClusteredInlined(size_t ctx,
+                                                   BitReader* JXL_RESTRICT br) {
+    if (uses_lz77) {
+      if (JXL_UNLIKELY(num_to_copy_ > 0)) {
+        size_t ret = lz77_window_[(copy_pos_++) & kWindowMask];
+        num_to_copy_--;
+        lz77_window_[(num_decoded_++) & kWindowMask] = ret;
+        return ret;
+      }
     }
+
     br->Refill();  // covers ReadSymbolWithoutRefill + PeekBits
     size_t token = ReadSymbolWithoutRefill(ctx, br);
-    if (JXL_UNLIKELY(token >= lz77_threshold_)) {
-      num_to_copy_ =
-          ReadHybridUintConfig(lz77_length_uint_, token - lz77_threshold_, br) +
-          lz77_min_length_;
-      br->Refill();  // covers ReadSymbolWithoutRefill + PeekBits
-      // Distance code.
-      size_t token = ReadSymbolWithoutRefill(lz77_ctx_, br);
-      size_t distance = ReadHybridUintConfig(configs[lz77_ctx_], token, br);
-      if (JXL_LIKELY(distance < num_special_distances_)) {
-        distance = special_distances_[distance];
-      } else {
-        distance = distance + 1 - num_special_distances_;
+    if (uses_lz77) {
+      if (JXL_UNLIKELY(token >= lz77_threshold_)) {
+        num_to_copy_ = ReadHybridUintConfig(lz77_length_uint_,
+                                            token - lz77_threshold_, br) +
+                       lz77_min_length_;
+        br->Refill();  // covers ReadSymbolWithoutRefill + PeekBits
+        // Distance code.
+        size_t token = ReadSymbolWithoutRefill(lz77_ctx_, br);
+        size_t distance = ReadHybridUintConfig(configs[lz77_ctx_], token, br);
+        if (JXL_LIKELY(distance < num_special_distances_)) {
+          distance = special_distances_[distance];
+        } else {
+          distance = distance + 1 - num_special_distances_;
+        }
+        if (JXL_UNLIKELY(distance > num_decoded_)) {
+          distance = num_decoded_;
+        }
+        if (JXL_UNLIKELY(distance > kWindowSize)) {
+          distance = kWindowSize;
+        }
+        copy_pos_ = num_decoded_ - distance;
+        if (JXL_UNLIKELY(distance == 0)) {
+          JXL_DASSERT(lz77_window_ != nullptr);
+          // distance 0 -> num_decoded_ == copy_pos_ == 0
+          size_t to_fill = std::min<size_t>(num_to_copy_, kWindowSize);
+          memset(lz77_window_, 0, to_fill * sizeof(lz77_window_[0]));
+        }
+        // TODO(eustas): overflow; mark BitReader as unhealthy
+        if (num_to_copy_ < lz77_min_length_) return 0;
+        // the code below is the same as doing this:
+        //        return ReadHybridUintClustered<uses_lz77>(ctx, br);
+        // but gcc doesn't like recursive inlining
+
+        size_t ret = lz77_window_[(copy_pos_++) & kWindowMask];
+        num_to_copy_--;
+        lz77_window_[(num_decoded_++) & kWindowMask] = ret;
+        return ret;
       }
-      if (JXL_UNLIKELY(distance > num_decoded_)) {
-        distance = num_decoded_;
-      }
-      if (JXL_UNLIKELY(distance > kWindowSize)) {
-        distance = kWindowSize;
-      }
-      copy_pos_ = num_decoded_ - distance;
-      if (JXL_UNLIKELY(distance == 0)) {
-        JXL_DASSERT(lz77_window_ != nullptr);
-        // distance 0 -> num_decoded_ == copy_pos_ == 0
-        size_t to_fill = std::min<size_t>(num_to_copy_, kWindowSize);
-        memset(lz77_window_, 0, to_fill * sizeof(lz77_window_[0]));
-      }
-      // TODO(eustas): overflow; mark BitReader as unhealthy
-      if (num_to_copy_ < lz77_min_length_) return 0;
-      return ReadHybridUintClustered(ctx, br);  // will trigger a copy.
     }
     size_t ret = ReadHybridUintConfig(configs[ctx], token, br);
-    if (lz77_window_) lz77_window_[(num_decoded_++) & kWindowMask] = ret;
+    if (uses_lz77 && lz77_window_)
+      lz77_window_[(num_decoded_++) & kWindowMask] = ret;
     return ret;
   }
 
-  JXL_INLINE size_t ReadHybridUint(size_t ctx, BitReader* JXL_RESTRICT br,
-                                   const std::vector<uint8_t>& context_map) {
-    return ReadHybridUintClustered(context_map[ctx], br);
+  // same but not inlined
+  template <bool uses_lz77>
+  size_t ReadHybridUintClustered(size_t ctx, BitReader* JXL_RESTRICT br) {
+    return ReadHybridUintClusteredInlined<uses_lz77>(ctx, br);
+  }
+
+  // inlined only in the no-lz77 case
+  template <bool uses_lz77>
+  JXL_INLINE size_t
+  ReadHybridUintClusteredMaybeInlined(size_t ctx, BitReader* JXL_RESTRICT br) {
+    if (uses_lz77) {
+      return ReadHybridUintClustered<uses_lz77>(ctx, br);
+    } else {
+      return ReadHybridUintClusteredInlined<uses_lz77>(ctx, br);
+    }
+  }
+
+  // inlined, for use in hot paths
+  template <bool uses_lz77>
+  JXL_INLINE size_t
+  ReadHybridUintInlined(size_t ctx, BitReader* JXL_RESTRICT br,
+                        const std::vector<uint8_t>& context_map) {
+    return ReadHybridUintClustered<uses_lz77>(context_map[ctx], br);
+  }
+
+  // not inlined, for use in non-hot paths
+  size_t ReadHybridUint(size_t ctx, BitReader* JXL_RESTRICT br,
+                        const std::vector<uint8_t>& context_map) {
+    return ReadHybridUintClustered</*uses_lz77=*/true>(context_map[ctx], br);
   }
 
   // ctx is a *clustered* context!
